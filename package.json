@@ -1,0 +1,15 @@
+{
+  "name": "auto-rename",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "bin": {
+    "autoRename": "index.js"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "chokidar": "^3.5.2",
+    "images": "^3.2.4"
+  }
+}
