@@ -1,0 +1,676 @@
+当我们长时间向文件夹中添加大量文件时，文件命名是一个非常耗时间的问题
+
+想象一下：我们从 001 开始命名，每次添加进一个文件，都需要经历先看当前排到第几了，再重命名，而且没有小键盘输入数字也很麻烦
+
+所以我们需要做一个自动重命名的工具
+
+## fs.watch
+
+通过简单的计算机知识找到了这个方法：[nodejs 监听目录，重命名文件 - 小朱的专栏-CSDN 博客](https://blog.csdn.net/w20101310/article/details/107165946)
+
+[fs 文件系统 | Node.js API 文档](http://nodejs.cn/api/fs.html#fs_fs_watch_filename_options_listener)
+
+```js
+const fs = require('fs')
+
+// 只监听当前目录
+fs.watch('.', (event, fileName) => {
+  console.log('🚀 ~ file: index.js ~ line 4 ~ fs.watch ~ event, fileName', event, fileName)
+  if (event === 'rename') {
+    if (fs.existsSync(fileName)) {
+      fs.rename(fileName, 'a1.js', err => {
+        if (err) console.log('重命名失败', err)
+      })
+    } else {
+      console.log('文件被删除')
+    }
+  }
+})
+```
+
+```js
+const fs = require('fs')
+const path = require('path')
+
+// 递归监听所有目录
+fs.watch('.', { recursive: true }, (event, fileName) => {
+  console.log('🚀 ~ file: index.js ~ line 4 ~ fs.watch ~ event, fileName', event, fileName)
+  if (event === 'rename') {
+    if (fs.existsSync(fileName)) {
+      const dirname = path.dirname(fileName)
+      fs.rename(fileName, path.join(dirname, 'a1.js'), err => {
+        if (err) console.log('重命名失败', err)
+      })
+    } else {
+      console.log('文件被删除')
+    }
+  }
+})
+```
+
+但实际测试发现 `fs.watch` 的 `event` 大部分都是 `rename` , 不论是新增删除重命名，这样肯定是不行的
+
+其实官网也说过这个问题：
+
+> 在大多数平台上，只要目录中文件名出现或消失，就会触发 'rename'。
+
+## chokidar
+
+再用计算机高级知识找到了这个：[paulmillr/chokidar: Minimal and efficient cross-platform file watching library](https://github.com/paulmillr/chokidar)
+
+一款监听文件夹内容变化的工具
+
+简单使用例子：
+
+Install with npm:
+
+```bash
+npm install chokidar
+```
+
+Then require and use it in your code:
+
+```js
+const chokidar = require('chokidar')
+
+// One-liner for current directory
+chokidar.watch('.').on('all', (event, path) => {
+  console.log(event, path)
+})
+```
+
+## 以下为成果
+
+```js
+const path = require('path')
+const fs = require('fs')
+const chokidar = require('chokidar')
+
+const cwd = path.join(__dirname, 'img')
+const readDir = fs.readdirSync(cwd)
+let len = readDir.length
+
+/**
+ * watch(paths, [options])
+ * ignoreInitial (default: false). If set to false then add/addDir events are also emitted for matching paths while instantiating the watching as chokidar discovers these file paths (before the ready event).
+ * 简单理解就是对于已有文件/文件夹, 初始化的时候也会触发 add/addDir 事件
+ * 我们目前只需要监听新增的文件，所以设置为 true, 忽略初始化事件
+ */
+chokidar
+  .watch(cwd, {
+    ignoreInitial: true
+  })
+  .on('add', filePath => {
+    const { name, ext } = path.parse(filePath)
+    if (isNaN(+name)) {
+      fs.rename(filePath, path.join(cwd, `${len.toString().padStart(3, 0)}${ext}`), err => {
+        if (!err) {
+          len++
+        }
+      })
+    }
+  })
+```
+
+这里只是一个简单的例子，具体可以根据自己的需求更改
+
+## npm 包
+
+也可以生成一个自动重命名的 `npm` 包：
+
+```js
+#!/usr/bin/env node
+
+const path = require('path')
+const fs = require('fs')
+const chokidar = require('chokidar')
+const process = require('process')
+
+const cwd = process.cwd()
+const readDir = fs.readdirSync(cwd)
+let len = readDir.length
+
+chokidar.watch(cwd, { ignoreInitial: true }).on('add', filePath => {
+  const { name, ext } = path.parse(filePath)
+  if (isNaN(+name)) {
+    fs.rename(filePath, path.join(cwd, `${len.toString().padStart(3, 0)}${ext}`), err => {
+      if (!err) {
+        len++
+      }
+    })
+  }
+})
+```
+
+当然这只适用文件夹下均是递增的文件，由于是自用，就不做过多判断了，大家可以根据自己需求更改
+
+而且每次只能添加一个文件，添加多个只保留一个，如果要支持多个，需要使用 `renameSync`
+
+```js
+fs.renameSync(filePath, path.join(cwd, `${len.toString().padStart(3, 0)}${ext}`))
+len++
+```
+
+`name` 也只判断了是不是数字，而没有判断是否连续
+
+```js
+chokidar.watch(cwd, { ignoreInitial: true }).on('add', filePath => {
+  const { name, ext } = path.parse(filePath)
+  const fileExt = ext === '.webp' ? '.jpg' : ext
+  const fileName = len.toString().padStart(3, 0)
+  if (isNaN(+name) || Math.abs(name - fileName) > 1) {
+    fs.renameSync(filePath, path.join(cwd, `${fileName}${fileExt}`))
+    len++
+  }
+})
+```
+
+## 扩展：项目新建文件自动初始化默认内容
+
+在开发新功能时，我们总要经历以下步骤：
+
+1. 新建文件
+2. 初始化默认内容，包括引入必须的依赖和一些默认配置
+3. 可能还需要创建一些对应的文件，比如新建 `.tsx` 文件后，对应的要新建 `.scss` 文件
+
+这些默认内容我们可以使用 `vscode` 的代码模版生成，但模版局限性还是很大的，比如并不能智能修改引用路径，一些名称不能动态设置
+
+所以我们可以使用 `chokidar` 监听文件并完成这一系列操作，提高工作效率
+
+目录树：
+
+```
+autorename/
+└─ src/
+   ├─ pages/
+   │  └─ Admin/
+   ├─ store/
+   │  └─ index.js
+   └─ index.js // 处理新增文件
+```
+
+比如一个 `tsx` 文件默认内容为：
+
+```tsx
+import React, { useEffect } from 'react'
+import { useImmer } from 'use-immer'
+import { useStore } from '../../store'
+import 'template.scss'
+
+const template = function () {
+  const globalStore = useStore()
+  const id = globalStore.id
+
+  // const [state, updateState] = useImmer<>({})
+
+  useEffect(() => {})
+  return <div></div>
+}
+
+export default template
+```
+
+这里有几个地方需要处理：`template` 需要修改成文件名，引用路径需要正确，需要新增同名的 `scss` 文件
+
+### 实现默认内容
+
+我们先来实现当前功能：
+
+```js
+const path = require('path')
+const fs = require('fs')
+const chokidar = require('chokidar')
+
+chokidar
+  .watch('./src', {
+    ignoreInitial: true
+  })
+  .on('add', filePath => {
+    const { ext } = path.parse(filePath)
+    if (ext === '.tsx') {
+      fs.writeFileSync(
+        filePath,
+        `import React, { useEffect } from 'react';
+import { useImmer } from 'use-immer';
+import { useStore } from '../../store';
+import 'template.scss'
+
+const template = function () {
+  const globalStore = useStore();
+  const id = globalStore.id;
+
+  // const [state, updateState] = useImmer<>({})
+
+  useEffect(() => {})
+  return <div></div>;
+};
+
+export default template;
+`
+      )
+    }
+  })
+```
+
+### 实现基本功能
+
+`template` 需要修改成文件名，引用路径需要正确，需要新增同名的 `scss` 文件：
+
+```js
+const path = require('path')
+const fs = require('fs')
+const chokidar = require('chokidar')
+
+const storeAbsolute = path.join(__dirname, 'store')
+
+chokidar
+  .watch('.', {
+    ignoreInitial: true
+  })
+  .on('add', filePath => {
+    const { dir, name, ext } = path.parse(filePath)
+    if (ext === '.tsx') {
+      let content = `import React, { useEffect } from 'react';
+import { useImmer } from 'use-immer';
+`
+      // 获取当前文件目录 (dir) 到 store 目录 (storeAbsolute) 的相对路径
+      const storeRelative = path.relative(dir, storeAbsolute)
+      content += `import { useStore } from '${storeRelative}';
+import './${name}.scss'
+
+const ${name} = function () {
+  const globalStore = useStore();
+  const id = globalStore.Info.id;
+
+  // const [state, updateState] = useImmer<>({})
+
+  useEffect(() => {})
+  return <div></div>;
+};
+
+export default ${name};
+`
+      fs.writeFileSync(filePath, content)
+      const scssName = path.join(dir, `${name}.scss`)
+      if (!fs.existsSync(scssName)) {
+        // 新增同名的 `scss` 文件，这里如果有默认内容也可以继续处理
+        fs.writeFileSync(scssName, '')
+      }
+    }
+  })
+```
+
+### 新增 `index` 文件和新增文件夹功能
+
+新增 `index.tsx` 文件处理逻辑：
+
+如果新增的是 `index.tsx` 文件，那么 `tsx` 文件中 `name` 就不能是 `index`, 而是文件夹名称，所以需要判断一下
+
+```js
+const path = require('path')
+const fs = require('fs')
+const chokidar = require('chokidar')
+
+const storeAbsolute = path.join(__dirname, 'store')
+
+chokidar
+  .watch('.', {
+    ignoreInitial: true
+  })
+  .on('add', filePath => {
+    const { dir, name, ext } = path.parse(filePath)
+    let exportName = name
+    if (ext === '.tsx') {
+      let content = `import React, { useEffect } from 'react';
+import { useImmer } from 'use-immer';
+`
+      if (name === 'index') {
+        // 获取新增文件的文件夹名称
+        exportName = path.basename(dir)
+      }
+      // 获取当前文件目录 (dir) 到 store 目录 (storeAbsolute) 的相对路径
+      const storeRelative = path.relative(dir, storeAbsolute)
+      content += `import { useStore } from '${storeRelative}';
+import './${name}.scss'
+
+const ${exportName} = function () {
+  const globalStore = useStore();
+  const id = globalStore.Info.id;
+
+  // const [state, updateState] = useImmer<>({})
+
+  useEffect(() => {})
+  return <div></div>;
+};
+
+export default ${exportName};
+`
+      fs.writeFileSync(filePath, content)
+      const scssName = path.join(dir, `${name}.scss`)
+      if (!fs.existsSync(scssName)) {
+        fs.writeFileSync(scssName, '')
+      }
+    }
+  })
+```
+
+这样就处理完新增 `.tsx` 文件的逻辑啦，现在处理一下新增文件夹的逻辑
+
+由于 `chokidar` 支持链式调用，所以我们可以继续增加监听文件夹的逻辑：
+
+```js
+  .on('addDir', dir => {
+    const name = 'index'
+    const storeRelative = path.relative(dir, storeAbsolute)
+    const exportName = path.basename(dir)
+    const content = `import React, { useEffect } from 'react';
+import { useImmer } from 'use-immer';
+import { useStore } from '${storeRelative}';
+import './${name}.scss'
+
+const ${exportName} = function () {
+  const globalStore = useStore();
+  const id = globalStore.Info.id;
+
+  // const [state, updateState] = useImmer<>({})
+
+  useEffect(() => {})
+  return <div></div>;
+};
+
+export default ${exportName};`
+    fs.writeFileSync(path.join(dir, 'index.tsx'), content)
+    fs.writeFileSync(path.join(dir, 'index.scss'), '')
+  })
+```
+
+这里默认新建的文件都为 `index`, 这样引入的时候可以少写一层路径，可以依据自己需求更改
+
+由于监听文件和文件夹里面处理逻辑类似，我们可以提取出来：
+
+```js
+const path = require('path')
+const fs = require('fs')
+const chokidar = require('chokidar')
+
+const storeAbsolute = path.join(__dirname, 'store')
+
+chokidar
+  .watch('.', {
+    ignoreInitial: true
+  })
+  .on('add', filePath => {
+    const { dir, name, ext } = path.parse(filePath)
+    handleFile(dir, name, ext)
+  })
+  .on('addDir', dir => {
+    handleFile(dir, 'index', '.tsx')
+  })
+
+const handleFile = (dir, name, ext) => {
+  let exportName = name
+  if (ext === '.tsx') {
+    let content = `import React, { useEffect } from 'react';
+import { useImmer } from 'use-immer';
+`
+    if (name === 'index') {
+      exportName = path.basename(dir)
+    }
+    // 获取当前文件目录 (dir) 到 store 目录 (storeAbsolute) 的相对路径
+    const storeRelative = path.relative(dir, storeAbsolute)
+    content += `import { useStore } from '${storeRelative}';
+import './${name}.scss'
+
+const ${exportName} = function () {
+  const globalStore = useStore();
+  const id = globalStore.Info.id;
+
+  // const [state, updateState] = useImmer<>({})
+
+  useEffect(() => {})
+  return <div></div>;
+};
+
+export default ${exportName};
+`
+    fs.writeFileSync(path.join(dir, `${name}${ext}`), content)
+    const scssName = path.join(dir, `${name}.scss`)
+    if (!fs.existsSync(scssName)) {
+      fs.writeFileSync(scssName, '')
+    }
+  }
+}
+```
+
+### 不处理拷贝过来的文件
+
+实际项目中不只有新建文件和文件夹，我们有时候还会从别处拷贝文件或文件夹过来，对应拷贝过来的，我们就不能再处理了
+
+```js
+const path = require('path')
+const fs = require('fs')
+const chokidar = require('chokidar')
+
+const storeAbsolute = path.join(__dirname, 'store')
+
+chokidar
+  .watch('.', {
+    ignoreInitial: true
+  })
+  .on('add', filePath => {
+    const data = fs.readFileSync(filePath, 'utf8')
+    if (data) return
+    const { dir, name, ext } = path.parse(filePath)
+    handleFile(dir, name, ext)
+  })
+  .on('addDir', dir => {
+    const files = fs.readdirSync(dir)
+    if (files.length) return
+    handleFile(dir, 'index', '.tsx')
+  })
+
+const handleFile = (dir, name, ext) => {
+  let exportName = name
+  if (ext === '.tsx') {
+    let content = `import React, { useEffect } from 'react';
+import { useImmer } from 'use-immer';
+`
+    if (name === 'index') {
+      exportName = path.basename(dir)
+    }
+    // 获取当前文件目录 (dir) 到 store 目录 (storeAbsolute) 的相对路径
+    const storeRelative = path.relative(dir, storeAbsolute)
+    content += `import { useStore } from '${storeRelative}';
+import './${name}.scss'
+
+const ${exportName} = function () {
+  const globalStore = useStore();
+  const id = globalStore.Info.id;
+
+  // const [state, updateState] = useImmer<>({})
+
+  useEffect(() => {})
+  return <div></div>;
+};
+
+export default ${exportName};
+`
+    fs.writeFileSync(path.join(dir, `${name}${ext}`), content)
+    const scssName = path.join(dir, `${name}.scss`)
+    if (!fs.existsSync(scssName)) {
+      fs.writeFileSync(scssName, '')
+    }
+  }
+}
+```
+
+## 处理多个引用及 className
+
+这里我们只引用了 `store`，实际可能还有 `utils`, `constants` 等，我们可以变成一个数组，循环遍历一下即可
+
+```js
+const handlePathList = [
+  { name: 'useStore', filePath: 'src/store' },
+  { name: '', filePath: 'src/utils' },
+  { name: '', filePath: 'src/constant' }
+]
+
+const handleFile = (dir, name, ext) => {
+  if (ext === '.tsx') {
+    let exportName = name
+    if (name === 'index') {
+      exportName = path.basename(dir)
+    }
+    const getImportFile = handlePathList.reduce((acc, { name, filePath }) => {
+      const relative = path.relative(dir, filePath).replace(/\\/g, '/')
+      return acc + `import { ${name} } from '${relative}';\r\n`
+    }, '')
+    const className = exportName.replace(/([A-Z])/g, (match, p, offset) => {
+      return (!offset ? '' : '-') + match.toLowerCase()
+    })
+    const content = `// ${exportName}
+import React, { useEffect } from 'react';
+import { useImmer } from 'use-immer';
+import { } from 'antd';
+${getImportFile}
+import './${name}.scss'
+interface Props {}
+interface State {}
+const ${exportName} = function (props: Props) {
+  const globalStore = useStore();
+  const id = globalStore.Info.id;
+  const [state, updateState] = useImmer<State>({})
+  useEffect(() => {}, [])
+  return <div className="${className}"></div>;
+};
+export default ${exportName};
+`
+    fs.writeFileSync(path.join(dir, `${name}${ext}`), content)
+    const scssName = path.join(dir, `${name}.scss`)
+    if (!fs.existsSync(scssName)) {
+      const scssContent = `.${className} {}`
+      fs.writeFileSync(scssName, scssContent)
+    }
+  }
+}
+```
+
+至此新增逻辑都处理完了，由于每个项目均不相同，所以里面处理逻辑也不同，这里只提供一个思路
+
+优化点也有很多，比如这里只有一个模板，实际项目中可能有多个模板，这样可能需要根据新建名称中的关键字来加载不同的模板
+
+### 与项目结合
+
+一开始想的是将这个执行命令合并到启动项目的命令中，这样启动项目的同时就启动我们这个监听处理了，不用启动多个服务
+
+- [npm 并行&串行执行多个 scripts 命令 - 知乎](https://zhuanlan.zhihu.com/p/137993627)
+
+```json
+{
+  "scripts": {
+    "start": "node ./watch.js & react-app-rewired start"
+  }
+}
+```
+
+但实际测试发现不行，可以正常监听文件，但不能启动项目，应该是 `&` 命令是在前一个命令执行完再执行后一个命令，但 `watch` 是一直监听，不会执行完，所以不会启动项目
+
+(有同事测试说可以正常执行，而我的就不行，目前不知原因)
+
+那就写一个插件，通过 `webpack` 一起启动
+
+实际测试 `Vue` 的 `vue.config.js` 是可行的：
+
+```js
+const chokidar = require('chokidar')
+class WatchFile {
+  apply() {
+    chokidar.watch('./src', { ignoreInitial: true }).on('all', (event, path) => {
+      console.log(event, path)
+    })
+  }
+}
+
+module.exports = {
+  configureWebpack: {
+    // ...
+    plugins: [new WatchFile()]
+  }
+}
+```
+
+而在 `React` 中的 `config-overrides.js` 中却没有生效，可能是自己写的位置不对
+
+目前的做法是直接写在了 `config-overrides.js` 中：
+
+```js
+const chokidar = require('chokidar')
+chokidar.watch('./src', { ignoreInitial: true }).on('all', (event, path) => {
+  console.log(event, path)
+})
+
+// ...
+```
+
+这样，将上面的处理逻辑加进来就可以了
+
+最近在网上找资料时，无意中发现了在 `React` 中使用 `webpack` 的方法：
+
+[react 不使用 eject 的配置方法（config-overrides 复现 vue 项目全部配置）](https://blog.csdn.net/qq_21567385/article/details/108383083)
+
+`watch.js`:
+
+```js
+// require ...
+
+class WatchFile {
+  apply() {
+    chokidar
+      .watch('./src', {
+        ignoreInitial: true
+      })
+      .on('add', filePath => {
+        const data = fs.readFileSync(filePath)
+        if (data) return
+        const { dir, name, ext } = path.parse(filePath)
+        handleFile(dir, name, ext)
+      })
+      .on('addDir', dir => {
+        const files = fs.readdirSync(dir)
+        if (files.length) return
+        handleFile(dir, 'index', '.tsx')
+      })
+  }
+}
+
+module.exports = WatchFile
+```
+
+`config-overrides.js`:
+
+```js
+const { addWebpackPlugin } = require('customize-cra')
+const WatchFile = require('./watch') // 监听逻辑
+
+module.exports = {
+  webpack: override(process.env.NODE_ENV === 'development' && addWebpackPlugin(new WatchFile()))
+}
+```
+
+最近项目升级了：[使用 `craco` 配置基于 `create-react-app` 的开发环境](https://blog.csdn.net/qq_39223195/article/details/106287522)
+
+可以在 `watch.js` 文件导出一个函数：
+
+```js
+module.exports = watchFile
+```
+
+在 `craco.config.js` 文件中导入直接调用即可：
+
+```js
+const watchFile = require('./autoInit')
+
+if (process.env.NODE_ENV === 'development') {
+  watchFile()
+}
+```
